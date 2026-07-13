@@ -9,6 +9,7 @@ import top.nontage.jsharedmem.model.TopicMetadata;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static top.nontage.jsharedmem.core.UnsafeUtil.*;
@@ -48,6 +49,8 @@ public class MemoryManager {
 
     private volatile boolean closed = false;
 
+    private long defaultRegionSize = 64 * 1024;
+
     public MemoryManager(long baseAddress, long totalSize) {
         this.baseAddress = baseAddress;
         this.totalSize = totalSize;
@@ -62,6 +65,10 @@ public class MemoryManager {
                     getInt(baseAddress + VERSION_OFFSET));
             loadStringTopicCache();
         }
+    }
+
+    public void setDefaultRegionSize(long size) {
+        this.defaultRegionSize = size;
     }
 
     private void initGlobalMetadata() {
@@ -205,6 +212,10 @@ public class MemoryManager {
     }
 
     public TopicRingBuffer getOrCreateTopic(int topicId) {
+        return getOrCreateTopic(topicId, defaultRegionSize);
+    }
+
+    public TopicRingBuffer getOrCreateTopic(int topicId, long regionSize) {
         TopicRingBuffer cached = topicCache.get(topicId);
         if (cached != null && !cached.isClosed()) {
             return cached;
@@ -226,7 +237,7 @@ public class MemoryManager {
                 return buffer;
             }
 
-            TopicRingBuffer newBuffer = createRegion(topicId);
+            TopicRingBuffer newBuffer = createRegion(topicId, regionSize);
             topicCache.put(topicId, newBuffer);
             logger.info("Created new topic {} with region size {} bytes",
                     topicId, newBuffer.getCapacity());
@@ -235,8 +246,12 @@ public class MemoryManager {
     }
 
     public TopicRingBuffer getOrCreateTopic(String topic) {
+        return getOrCreateTopic(topic, defaultRegionSize);
+    }
+
+    public TopicRingBuffer getOrCreateTopic(String topic, long regionSize) {
         int topicId = getOrCreateStringTopicId(topic);
-        return getOrCreateTopic(topicId);
+        return getOrCreateTopic(topicId, regionSize);
     }
 
     public TopicRingBuffer getTopic(int topicId) {
@@ -267,7 +282,48 @@ public class MemoryManager {
         return buffer.getSubscriberPendingCount(subscriberId);
     }
 
-    private TopicRingBuffer createRegion(int topicId) {
+    public synchronized void removeTopic(int topicId) {
+        TopicRingBuffer buffer = topicCache.remove(topicId);
+        if (buffer == null) {
+            logger.warn("Topic {} not found", topicId);
+            return;
+        }
+
+        long regionStart = findRegion(topicId);
+        if (regionStart == 0) {
+            logger.warn("Region for topic {} not found", topicId);
+            return;
+        }
+
+        int regionSize = getInt(regionStart + REGION_SIZE_OFFSET);
+        long usedSize = getLong(baseAddress + USED_SIZE_OFFSET);
+        putLong(baseAddress + USED_SIZE_OFFSET, usedSize - regionSize);
+
+        int topicCount = getInt(baseAddress + TOPIC_COUNT_OFFSET);
+        putInt(baseAddress + TOPIC_COUNT_OFFSET, topicCount - 1);
+
+        setMemory(regionStart, regionSize, (byte) 0);
+
+        for (Map.Entry<String, Integer> entry : stringTopicCache.entrySet()) {
+            if (entry.getValue() == topicId) {
+                stringTopicCache.remove(entry.getKey());
+                break;
+            }
+        }
+
+        logger.info("Removed topic {}: freed {} bytes", topicId, regionSize);
+    }
+
+    public synchronized void removeTopic(String topic) {
+        int topicId = getTopicId(topic);
+        if (topicId == -1) {
+            logger.warn("Topic {} not found", topic);
+            return;
+        }
+        removeTopic(topicId);
+    }
+
+    private TopicRingBuffer createRegion(int topicId, long requestedSize) {
         int topicCount = getInt(baseAddress + TOPIC_COUNT_OFFSET);
         if (topicCount >= 32) {
             throw new MemoryFullException("Maximum topics exceeded: " + topicCount);
@@ -276,12 +332,12 @@ public class MemoryManager {
         long usedSize = getLong(baseAddress + USED_SIZE_OFFSET);
         long available = totalSize - GLOBAL_METADATA_SIZE - usedSize;
 
-        long regionSize = Math.min(available, 64 * 1024);
+        long regionSize = Math.min(requestedSize, available);
 
         if (regionSize < 4096) {
             throw new MemoryFullException(
-                    String.format("Not enough memory: available=%d bytes, min region=%d bytes",
-                            available, 4096)
+                    String.format("Not enough memory: requested=%d bytes, available=%d bytes, min region=%d bytes",
+                            requestedSize, available, 4096)
             );
         }
 
@@ -369,11 +425,23 @@ public class MemoryManager {
     }
 
     public MemoryStats getStats() {
-        long usedSize = getLong(baseAddress + USED_SIZE_OFFSET);
+        long arenaUsed = getLong(baseAddress + USED_SIZE_OFFSET);
         int topicCount = getInt(baseAddress + TOPIC_COUNT_OFFSET);
         long createdAt = getLong(baseAddress + CREATED_AT_OFFSET);
 
-        return new MemoryStats(totalSize, usedSize, topicCount, createdAt);
+        long totalRegionSize = 0;
+        long totalRegionUsed = 0;
+        long totalDataBytes = 0;
+        long totalDataCount = 0;
+
+        for (TopicRingBuffer buffer : topicCache.values()) {
+            totalRegionSize += buffer.getCapacity();
+            totalRegionUsed += buffer.getCapacity() - (buffer.getCapacity() - buffer.getPendingBytes());
+            totalDataBytes += buffer.getPendingBytes();
+            totalDataCount += buffer.getPendingCount();
+        }
+
+        return new MemoryStats(totalSize, arenaUsed, totalRegionSize, totalRegionUsed, totalDataBytes, totalDataCount, topicCount, createdAt);
     }
 
     public long getTopicPendingCount(int topicId) {

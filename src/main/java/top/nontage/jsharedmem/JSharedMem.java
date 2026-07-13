@@ -25,6 +25,7 @@ public class JSharedMem implements AutoCloseable {
     public static final long DEFAULT_MEMORY_SIZE = 1024 * 1024;
     public static final long MIN_MEMORY_SIZE = 64 * 1024;
     private static final double DEFAULT_MAX_DATA_SIZE_RATIO = 0.1;
+    public static final long DEFAULT_REGION_SIZE = 64 * 1024;
 
     private final String name;
     private final long memorySize;
@@ -33,7 +34,7 @@ public class JSharedMem implements AutoCloseable {
     private final ExecutorService executor;
     private final AtomicBoolean running = new AtomicBoolean(true);
 
-    private JSharedMem(String name, long memorySize, long maxDataSize) {
+    private JSharedMem(String name, long memorySize, long maxDataSize, long defaultRegionSize) {
         this.name = name;
         this.memorySize = memorySize;
 
@@ -45,6 +46,7 @@ public class JSharedMem implements AutoCloseable {
 
         long baseAddress = NativeBridge.createOrOpen(name, memorySize);
         this.memoryManager = new MemoryManager(baseAddress, memorySize);
+        this.memoryManager.setDefaultRegionSize(defaultRegionSize);
         this.executor = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r);
             t.setName("jsharedmem-" + name + "-" + t.getId());
@@ -58,7 +60,8 @@ public class JSharedMem implements AutoCloseable {
             }
         }));
 
-        logger.info("JSharedMem connected: name={}, size={} bytes, maxDataSize={} bytes", name, memorySize, this.maxDataSize);
+        logger.info("JSharedMem connected: name={}, size={} bytes, maxDataSize={} bytes, defaultRegionSize={} bytes",
+                name, memorySize, this.maxDataSize, defaultRegionSize);
     }
 
     public static JSharedMem connect(String name) {
@@ -70,6 +73,10 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public static JSharedMem connect(String name, long memorySize, long maxDataSize) {
+        return connect(name, memorySize, maxDataSize, DEFAULT_REGION_SIZE);
+    }
+
+    public static JSharedMem connect(String name, long memorySize, long maxDataSize, long defaultRegionSize) {
         if (name == null || name.trim().isEmpty()) {
             throw new IllegalArgumentException("Name cannot be null or empty");
         }
@@ -82,8 +89,19 @@ public class JSharedMem implements AutoCloseable {
         if (maxDataSize > memorySize / 2) {
             throw new IllegalArgumentException("Max data size cannot exceed half of memory size");
         }
+        if (defaultRegionSize < 4096) {
+            throw new IllegalArgumentException("Default region size too small: " + defaultRegionSize + " (min 4KB)");
+        }
+        if (defaultRegionSize > memorySize) {
+            throw new IllegalArgumentException("Default region size cannot exceed memory size");
+        }
         memorySize = ((memorySize + 4095) / 4096) * 4096;
-        return new JSharedMem(name, memorySize, maxDataSize);
+        defaultRegionSize = ((defaultRegionSize + 4095) / 4096) * 4096;
+        return new JSharedMem(name, memorySize, maxDataSize, defaultRegionSize);
+    }
+
+    public void setDefaultRegionSize(long regionSize) {
+        memoryManager.setDefaultRegionSize(regionSize);
     }
 
     public void publish(int topicId, Object data) {
@@ -373,6 +391,20 @@ public class JSharedMem implements AutoCloseable {
             return 0;
         }
         return buffer.getSubscriberPendingBytes(subscriberId);
+    }
+
+    public void removeTopic(int topicId) {
+        if (!running.get()) {
+            throw new IllegalStateException("JSharedMem is already closed");
+        }
+        memoryManager.removeTopic(topicId);
+    }
+
+    public void removeTopic(String topic) {
+        if (!running.get()) {
+            throw new IllegalStateException("JSharedMem is already closed");
+        }
+        memoryManager.removeTopic(topic);
     }
 
     public int getMaxDataSize() {

@@ -20,15 +20,18 @@ public class TopicRingBuffer {
     private static final int SUBSCRIBER_TABLE_START = 64;
     private static final int MAX_SUBSCRIBERS = 32;
     private static final int SUBSCRIBER_ENTRY_SIZE = 64;
-    private static final int SUBSCRIBER_ID_OFFSET = 0;
+    private static final int SUBSCRIBER_TABLE_SIZE = MAX_SUBSCRIBERS * SUBSCRIBER_ENTRY_SIZE;
+    private static final int SUBSCRIBER_FLAG_OFFSET = 0;
+    private static final int SUBSCRIBER_ID_OFFSET = 4;
     private static final int SUBSCRIBER_READ_OFFSET_OFFSET = 32;
     private static final int SUBSCRIBER_LAST_ACTIVE_OFFSET = 40;
-    private static final int SUBSCRIBER_ID_LENGTH = 32;
+    private static final int SUBSCRIBER_ID_LENGTH = 28;
 
     private final int topicId;
     private final long regionStart;
     private final long dataStart;
     private final int dataCapacity;
+    private final int maxMessageSize;
 
     private final long writeOffsetAddress;
     private final long readOffsetAddress;
@@ -41,23 +44,27 @@ public class TopicRingBuffer {
         this.topicId = topicId;
         this.regionStart = regionStart;
         int regionSize = getInt(regionStart + 4);
-        this.dataStart = regionStart + 64;
-        this.dataCapacity = regionSize - 64;
+        this.dataStart = regionStart + SUBSCRIBER_TABLE_START + SUBSCRIBER_TABLE_SIZE;
+        this.dataCapacity = regionSize - SUBSCRIBER_TABLE_START - SUBSCRIBER_TABLE_SIZE;
         this.writeOffsetAddress = regionStart + 8;
         this.readOffsetAddress = regionStart + 16;
+
+        this.maxMessageSize = Math.min(Math.max(dataCapacity / 10, 1024), 1024 * 1024);
 
         long currentWriteOffset = getLong(writeOffsetAddress);
         long currentReadOffset = getLong(readOffsetAddress);
 
         loadSubscribers();
 
-        logger.debug("TopicRingBuffer created: topic={}, capacity={} bytes, writeOffset={}, readOffset={}",
-                topicId, dataCapacity, currentWriteOffset, currentReadOffset);
+        logger.debug("TopicRingBuffer created: topic={}, capacity={} bytes, maxMsgSize={}, writeOffset={}, readOffset={}",
+                topicId, dataCapacity, maxMessageSize, currentWriteOffset, currentReadOffset);
     }
 
     private void loadSubscribers() {
         for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
             long entryAddr = regionStart + SUBSCRIBER_TABLE_START + (i * SUBSCRIBER_ENTRY_SIZE);
+            int flag = getInt(entryAddr + SUBSCRIBER_FLAG_OFFSET);
+            if (flag == 0) continue;
             String subscriberId = readSubscriberId(entryAddr);
             if (!subscriberId.isEmpty()) {
                 long readOffset = getLong(entryAddr + SUBSCRIBER_READ_OFFSET_OFFSET);
@@ -67,7 +74,7 @@ public class TopicRingBuffer {
         }
     }
 
-    public synchronized long registerSubscriber(String subscriberId) {
+    public long registerSubscriber(String subscriberId) {
         Long cachedOffset = subscriberCache.get(subscriberId);
         if (cachedOffset != null) {
             updateLastActive(subscriberId);
@@ -78,15 +85,19 @@ public class TopicRingBuffer {
 
         for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
             long entryAddr = regionStart + SUBSCRIBER_TABLE_START + (i * SUBSCRIBER_ENTRY_SIZE);
-            String existingId = readSubscriberId(entryAddr);
-            if (existingId.isEmpty()) {
-                writeSubscriberId(entryAddr, subscriberId);
-                putLong(entryAddr + SUBSCRIBER_READ_OFFSET_OFFSET, writeOffset);
-                putLong(entryAddr + SUBSCRIBER_LAST_ACTIVE_OFFSET, System.currentTimeMillis());
-                subscriberCache.put(subscriberId, writeOffset);
-                logger.info("Registered subscriber {} for topic {} with readOffset={}",
-                        subscriberId, topicId, writeOffset);
-                return writeOffset;
+            long flagAddr = entryAddr + SUBSCRIBER_FLAG_OFFSET;
+
+            int flag = getInt(flagAddr);
+            if (flag == 0) {
+                if (compareAndSwapInt(null, flagAddr, 0, 1)) {
+                    writeSubscriberId(entryAddr, subscriberId);
+                    putLong(entryAddr + SUBSCRIBER_READ_OFFSET_OFFSET, writeOffset);
+                    putLong(entryAddr + SUBSCRIBER_LAST_ACTIVE_OFFSET, System.currentTimeMillis());
+                    subscriberCache.put(subscriberId, writeOffset);
+                    logger.info("Registered subscriber {} for topic {} with readOffset={}",
+                            subscriberId, topicId, writeOffset);
+                    return writeOffset;
+                }
             }
         }
 
@@ -107,6 +118,8 @@ public class TopicRingBuffer {
 
         for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
             long entryAddr = regionStart + SUBSCRIBER_TABLE_START + (i * SUBSCRIBER_ENTRY_SIZE);
+            int flag = getInt(entryAddr + SUBSCRIBER_FLAG_OFFSET);
+            if (flag == 0) continue;
             String existingId = readSubscriberId(entryAddr);
             if (existingId.equals(subscriberId)) {
                 putLong(entryAddr + SUBSCRIBER_READ_OFFSET_OFFSET, newOffset);
@@ -119,6 +132,8 @@ public class TopicRingBuffer {
     private void updateLastActive(String subscriberId) {
         for (int i = 0; i < MAX_SUBSCRIBERS; i++) {
             long entryAddr = regionStart + SUBSCRIBER_TABLE_START + (i * SUBSCRIBER_ENTRY_SIZE);
+            int flag = getInt(entryAddr + SUBSCRIBER_FLAG_OFFSET);
+            if (flag == 0) continue;
             String existingId = readSubscriberId(entryAddr);
             if (existingId.equals(subscriberId)) {
                 putLong(entryAddr + SUBSCRIBER_LAST_ACTIVE_OFFSET, System.currentTimeMillis());
@@ -155,43 +170,46 @@ public class TopicRingBuffer {
         int totalSize = MSG_HEADER_SIZE + data.length;
         totalSize = (totalSize + 7) & ~7;
 
-        long writeOffset = getLong(writeOffsetAddress);
         long readOffset = getLong(readOffsetAddress);
-        long writePos = dataStart + (writeOffset % dataCapacity);
-        long readPos = dataStart + (readOffset % dataCapacity);
-
+        long writeOffset;
+        long writePos;
         long available;
-        if (writePos >= readPos) {
-            available = dataCapacity - (writePos - readPos);
-        } else {
-            available = readPos - writePos;
+
+        while (true) {
+            writeOffset = getLong(writeOffsetAddress);
+            writePos = dataStart + (writeOffset % dataCapacity);
+            long readPos = dataStart + (readOffset % dataCapacity);
+
+            if (writePos >= readPos) {
+                available = dataCapacity - (writePos - readPos);
+            } else {
+                available = readPos - writePos;
+            }
+
+            if (available < totalSize + 8) {
+                logger.warn("Topic {} memory full: available={}, needed={}", topicId, available, totalSize + 8);
+                return false;
+            }
+
+            long newWriteOffset = writeOffset + totalSize;
+            if (compareAndSwapLong(null, writeOffsetAddress, writeOffset, newWriteOffset)) {
+                long now = System.currentTimeMillis();
+                putInt(writePos + MSG_LENGTH_OFFSET, data.length);
+                putLong(writePos + MSG_TIMESTAMP_OFFSET, now);
+                putLong(writePos + MSG_TTL_OFFSET, ttl);
+                for (int i = 0; i < data.length; i++) {
+                    putByte(writePos + MSG_HEADER_SIZE + i, data[i]);
+                }
+                logger.trace("Published {} bytes to topic {}", data.length, topicId);
+                return true;
+            }
         }
-
-        if (available < totalSize + 8) {
-            logger.warn("Topic {} memory full: available={}, needed={}", topicId, available, totalSize + 8);
-            return false;
-        }
-
-        long now = System.currentTimeMillis();
-
-        putInt(writePos + MSG_LENGTH_OFFSET, data.length);
-        putLong(writePos + MSG_TIMESTAMP_OFFSET, now);
-        putLong(writePos + MSG_TTL_OFFSET, ttl);
-
-        for (int i = 0; i < data.length; i++) {
-            putByte(writePos + MSG_HEADER_SIZE + i, data[i]);
-        }
-
-        putLong(writeOffsetAddress, writeOffset + totalSize);
-        return true;
     }
 
     public byte[] poll(String subscriberId) {
         if (closed) {
             throw new IllegalStateException("TopicRingBuffer is closed");
         }
-
-        cleanExpiredMessages();
 
         long writeOffset = getLong(writeOffsetAddress);
         Long readOffsetObj = subscriberCache.get(subscriberId);
@@ -207,8 +225,9 @@ public class TopicRingBuffer {
         long readPos = dataStart + (readOffset % dataCapacity);
         int length = getInt(readPos + MSG_LENGTH_OFFSET);
 
-        if (length <= 0 || length > 1024 * 1024) {
-            logger.warn("Invalid message for subscriber {} at offset {}, skipping", subscriberId, readOffset);
+
+        if (length <= 0 || length > maxMessageSize) {
+            logger.warn("Invalid message for subscriber {} at offset {}, length={}, skipping", subscriberId, readOffset, length);
             updateSubscriberReadOffset(subscriberId, readOffset + 1);
             return null;
         }
@@ -233,9 +252,9 @@ public class TopicRingBuffer {
         int totalSize = MSG_HEADER_SIZE + length;
         totalSize = (totalSize + 7) & ~7;
         updateSubscriberReadOffset(subscriberId, readOffset + totalSize);
+        cleanExpiredMessages();
 
-        logger.trace("Subscriber {} consumed {} bytes (readOffset={})",
-                subscriberId, length, readOffset);
+        logger.trace("Subscriber {} consumed {} bytes (readOffset={})", subscriberId, length, readOffset);
         return data;
     }
 
@@ -249,7 +268,7 @@ public class TopicRingBuffer {
             long readPos = dataStart + (readOffset % dataCapacity);
             int length = getInt(readPos + MSG_LENGTH_OFFSET);
 
-            if (length <= 0 || length > 1024 * 1024) {
+            if (length <= 0 || length > maxMessageSize) {
                 putLong(readOffsetAddress, readOffset + 1);
                 readOffset = getLong(readOffsetAddress);
                 continue;
@@ -299,7 +318,7 @@ public class TopicRingBuffer {
             long readPos = dataStart + (scanOffset % dataCapacity);
             int length = getInt(readPos + MSG_LENGTH_OFFSET);
 
-            if (length <= 0 || length > 1024 * 1024) {
+            if (length <= 0 || length > maxMessageSize) {
                 break;
             }
 
@@ -328,7 +347,7 @@ public class TopicRingBuffer {
             long readPos = dataStart + (scanOffset % dataCapacity);
             int length = getInt(readPos + MSG_LENGTH_OFFSET);
 
-            if (length <= 0 || length > 1024 * 1024) {
+            if (length <= 0 || length > maxMessageSize) {
                 break;
             }
 
@@ -374,8 +393,6 @@ public class TopicRingBuffer {
             throw new IllegalStateException("TopicRingBuffer is closed");
         }
 
-        cleanExpiredMessages();
-
         long writeOffset = getLong(writeOffsetAddress);
         Long readOffsetObj = subscriberCache.get(subscriberId);
         if (readOffsetObj == null) {
@@ -390,8 +407,8 @@ public class TopicRingBuffer {
         long readPos = dataStart + (readOffset % dataCapacity);
         int length = getInt(readPos + MSG_LENGTH_OFFSET);
 
-        if (length <= 0 || length > 1024 * 1024) {
-            logger.warn("Invalid message for subscriber {} at offset {}, skipping", subscriberId, readOffset);
+        if (length <= 0 || length > maxMessageSize) {
+            logger.warn("Invalid message for subscriber {} at offset {}, length={}, skipping", subscriberId, readOffset, length);
             updateSubscriberReadOffset(subscriberId, readOffset + 1);
             return null;
         }
@@ -416,9 +433,9 @@ public class TopicRingBuffer {
         int totalSize = MSG_HEADER_SIZE + length;
         totalSize = (totalSize + 7) & ~7;
         updateSubscriberReadOffset(subscriberId, readOffset + totalSize);
+        cleanExpiredMessages();
 
-        logger.trace("Subscriber {} consumed {} bytes (readOffset={})",
-                subscriberId, length, readOffset);
+        logger.trace("Subscriber {} consumed {} bytes (readOffset={})", subscriberId, length, readOffset);
 
         return new MessageWithMeta(data, timestamp, ttl);
     }

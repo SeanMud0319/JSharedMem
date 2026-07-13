@@ -61,4 +61,12 @@ public final class UnsafeUtil {
     public static long getAddress(Object obj, long offset) {
         return UNSAFE.getLong(obj, offset);
     }
+
+    public static boolean compareAndSwapInt(Object o, long flagAddr, int i, int i1) {
+        return UNSAFE.compareAndSwapInt(o, flagAddr, i, i1);
+    }
+
+    public static boolean compareAndSwapLong(Object o, long writeOffsetAddress, long writeOffset, long newWriteOffset) {
+        return UNSAFE.compareAndSwapLong(o, writeOffsetAddress, writeOffset, newWriteOffset);
+    }
 }
