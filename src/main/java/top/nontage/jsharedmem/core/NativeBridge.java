@@ -20,7 +20,7 @@ public class NativeBridge {
     private static long currentSize = 0;
 
     public interface Kernel32 extends StdCallLibrary {
-        Kernel32 INSTANCE = IS_WINDOWS ? Native.load("kernel32", Kernel32.class) : null;
+        Kernel32 INSTANCE = Native.load("kernel32", Kernel32.class);
         long INVALID_HANDLE_VALUE = -1L;
         int PAGE_READWRITE = 0x04;
         int FILE_MAP_WRITE = 0x02;
@@ -57,6 +57,9 @@ public class NativeBridge {
     private static LibRt libRt = null;
 
     private static synchronized LibRt getLibRt() {
+        if (IS_WINDOWS) {
+            throw new SharedMemoryException("LibRt should not be loaded on Windows");
+        }
         if (libRt == null) {
             String[] candidates = {
                     "/usr/lib/x86_64-linux-gnu/librt.so.1",
@@ -85,7 +88,60 @@ public class NativeBridge {
         return libRt;
     }
 
+    private static void validateWindowsSharedMemory(String name, long size) {
+        try {
+            Kernel32 k32 = Kernel32.INSTANCE;
+            long hMap = k32.OpenFileMappingW(
+                    Kernel32.FILE_MAP_READ,
+                    false,
+                    new WString(name)
+            );
+            if (hMap == 0) {
+                return;
+            }
+
+            long addr = 0;
+            try {
+                addr = k32.MapViewOfFile(hMap, Kernel32.FILE_MAP_READ, 0, 0, 1024);
+                if (addr == 0) {
+                    throw new SharedMemoryException(
+                            "Failed to map Windows shared memory header for validation"
+                    );
+                }
+
+                int magic = UnsafeUtil.getInt(addr);
+                if (magic != 0x4A534D) {
+                    throw new SharedMemoryException(
+                            String.format("Invalid magic number in Windows shared memory: 0x%x (expected 0x4A534D)", magic)
+                    );
+                }
+
+                long totalSize = UnsafeUtil.getLong(addr + 8);
+                if (totalSize != size) {
+                    throw new SharedMemoryException(
+                            String.format("Windows shared memory size mismatch: found %d, expected %d", totalSize, size)
+                    );
+                }
+
+                logger.debug("Windows shared memory validation passed: name={}, size={}", name, size);
+
+            } finally {
+                if (addr != 0) {
+                    k32.UnmapViewOfFile(new Pointer(addr));
+                }
+                k32.CloseHandle(hMap);
+            }
+
+        } catch (SharedMemoryException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SharedMemoryException("Windows shared memory validation failed: " + e.getMessage(), e);
+        }
+    }
+
     private static void validateLinuxSharedMemory(String name, long size) {
+        if (IS_WINDOWS) return;
+
         String shmPath = "/dev/shm/" + name;
         java.io.File shmFile = new java.io.File(shmPath);
 
@@ -137,30 +193,6 @@ public class NativeBridge {
         }
     }
 
-    private static void validateWindowsSharedMemory(String name) {
-        try {
-            Kernel32 k32 = Kernel32.INSTANCE;
-            long hMap = k32.OpenFileMappingW(
-                    Kernel32.FILE_MAP_READ,
-                    false,
-                    new WString(name)
-            );
-            if (hMap != 0) {
-                long addr = k32.MapViewOfFile(hMap, Kernel32.FILE_MAP_READ, 0, 0, 1024);
-                if (addr != 0) {
-                    int magic = UnsafeUtil.getInt(addr);
-                    if (magic != 0x4A534D) {
-                        logger.warn("Invalid magic number on Windows: 0x{}", Integer.toHexString(magic));
-                    }
-                    k32.UnmapViewOfFile(new Pointer(addr));
-                }
-                k32.CloseHandle(hMap);
-            }
-        } catch (Exception e) {
-            logger.warn("Error checking Windows shared memory: {}", e.getMessage());
-        }
-    }
-
     public static synchronized long createOrOpen(String name, long size) {
         if (mappedAddress != 0 && currentName != null && currentName.equals(name)) {
             logger.debug("Reusing existing shared memory: {}", name);
@@ -177,7 +209,7 @@ public class NativeBridge {
         if (!IS_WINDOWS) {
             validateLinuxSharedMemory(safeName, size);
         } else {
-            validateWindowsSharedMemory(safeName);
+            validateWindowsSharedMemory(safeName, size);
         }
 
         try {
@@ -217,9 +249,6 @@ public class NativeBridge {
 
     private static long createWindows(String name, long size) {
         Kernel32 k32 = Kernel32.INSTANCE;
-        if (k32 == null) {
-            throw new SharedMemoryException("Failed to load Kernel32 library");
-        }
 
         long hMap = k32.CreateFileMappingW(
                 Kernel32.INVALID_HANDLE_VALUE,
@@ -257,12 +286,9 @@ public class NativeBridge {
 
     private static long openWindows(String name, long size) {
         Kernel32 k32 = Kernel32.INSTANCE;
-        if (k32 == null) {
-            throw new SharedMemoryException("Failed to load Kernel32 library");
-        }
 
         long hMap = k32.OpenFileMappingW(
-                Kernel32.FILE_MAP_READ,
+                Kernel32.FILE_MAP_WRITE | Kernel32.FILE_MAP_READ,
                 false,
                 new WString(name)
         );
@@ -275,7 +301,7 @@ public class NativeBridge {
 
         long addr = k32.MapViewOfFile(
                 hMap,
-                Kernel32.FILE_MAP_READ,
+                Kernel32.FILE_MAP_WRITE | Kernel32.FILE_MAP_READ,
                 0, 0,
                 size
         );
@@ -293,7 +319,6 @@ public class NativeBridge {
 
     private static void closeWindows() {
         Kernel32 k32 = Kernel32.INSTANCE;
-        if (k32 == null) return;
 
         if (mappedAddress != 0) {
             k32.UnmapViewOfFile(new Pointer(mappedAddress));
@@ -383,6 +408,8 @@ public class NativeBridge {
     }
 
     private static void closeLinux() {
+        if (IS_WINDOWS) return;
+
         LibRt rt;
         try {
             rt = getLibRt();

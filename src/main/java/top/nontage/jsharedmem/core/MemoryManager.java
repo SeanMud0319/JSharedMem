@@ -3,6 +3,7 @@ package top.nontage.jsharedmem.core;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import top.nontage.jsharedmem.exception.MemoryFullException;
+import top.nontage.jsharedmem.exception.SharedMemoryException;
 import top.nontage.jsharedmem.model.MemoryStats;
 import top.nontage.jsharedmem.model.TopicMetadata;
 
@@ -332,12 +333,23 @@ public class MemoryManager {
     }
 
     private TopicRingBuffer createRegion(int topicId, long requestedSize) {
+        if (baseAddress == 0) {
+            throw new SharedMemoryException("baseAddress is 0");
+        }
+
         int topicCount = getInt(baseAddress + TOPIC_COUNT_OFFSET);
         if (topicCount >= 32) {
             throw new MemoryFullException("Maximum topics exceeded: " + topicCount);
         }
 
         long usedSize = getLong(baseAddress + USED_SIZE_OFFSET);
+
+        if (usedSize < 0 || usedSize > totalSize - GLOBAL_METADATA_SIZE) {
+            logger.warn("Invalid usedSize: {}, resetting to 0", usedSize);
+            putLong(baseAddress + USED_SIZE_OFFSET, 0);
+            usedSize = 0;
+        }
+
         long available = totalSize - GLOBAL_METADATA_SIZE - usedSize;
 
         long regionSize = Math.min(requestedSize, available);
@@ -353,7 +365,14 @@ public class MemoryManager {
 
         long regionStart = dataStart + usedSize;
 
-        UnsafeUtil.setMemory(regionStart, regionSize, (byte)0);
+        if (regionStart < baseAddress || regionStart + regionSize > baseAddress + totalSize) {
+            throw new SharedMemoryException(
+                    String.format("Invalid region range: start=0x%x, size=%d, base=0x%x, total=%d",
+                            regionStart, regionSize, baseAddress, totalSize)
+            );
+        }
+
+        UnsafeUtil.setMemory(regionStart, regionSize, (byte) 0);
 
         putInt(regionStart + REGION_TOPIC_ID_OFFSET, topicId);
         putInt(regionStart + REGION_SIZE_OFFSET, (int) regionSize);
@@ -407,6 +426,12 @@ public class MemoryManager {
 
             if (regionSize <= 0 || regionSize > this.totalSize) {
                 logger.error("Invalid region size: {} at pos=0x{}, resetting shared memory", regionSize, Long.toHexString(pos));
+                resetSharedMemory();
+                return 0L;
+            }
+
+            if (regionSize % 4096 != 0) {
+                logger.error("regionSize not aligned: {} at pos=0x{}, resetting shared memory", regionSize, Long.toHexString(pos));
                 resetSharedMemory();
                 return 0L;
             }
