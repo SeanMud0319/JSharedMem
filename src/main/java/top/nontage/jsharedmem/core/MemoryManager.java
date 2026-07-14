@@ -52,18 +52,26 @@ public class MemoryManager {
     private long defaultRegionSize = 64 * 1024;
 
     public MemoryManager(long baseAddress, long totalSize) {
+        if (baseAddress == 0L) {
+            throw new IllegalStateException("baseAddress is 0 - shared memory not initialized");
+        }
         this.baseAddress = baseAddress;
         this.totalSize = totalSize;
-        this.dataStart = baseAddress + GLOBAL_METADATA_SIZE;
+        this.dataStart = baseAddress + 1024L;
 
-        int magic = getInt(baseAddress + MAGIC_OFFSET);
-        if (magic != 0x4A534D) {
-            initGlobalMetadata();
+        int magic = UnsafeUtil.getInt(baseAddress);
+        if (magic != 4870989) {
+            this.initGlobalMetadata();
             logger.info("Initialized new shared memory");
         } else {
-            logger.info("Connected to existing shared memory (version: {})",
-                    getInt(baseAddress + VERSION_OFFSET));
-            loadStringTopicCache();
+            logger.info("Connected to existing shared memory (version: {})", UnsafeUtil.getInt(baseAddress + 4L));
+            this.loadStringTopicCache();
+
+            long usedSize = UnsafeUtil.getLong(this.baseAddress + 16L);
+            if (usedSize < 0 || usedSize > this.totalSize) {
+                logger.warn("Invalid usedSize: {}, resetting to 0", usedSize);
+                UnsafeUtil.putLong(this.baseAddress + 16L, 0L);
+            }
         }
     }
 
@@ -345,6 +353,8 @@ public class MemoryManager {
 
         long regionStart = dataStart + usedSize;
 
+        UnsafeUtil.setMemory(regionStart, regionSize, (byte)0);
+
         putInt(regionStart + REGION_TOPIC_ID_OFFSET, topicId);
         putInt(regionStart + REGION_SIZE_OFFSET, (int) regionSize);
         putLong(regionStart + REGION_WRITE_SEQ_OFFSET, 0);
@@ -362,20 +372,69 @@ public class MemoryManager {
     }
 
     private long findRegion(int topicId) {
-        long usedSize = getLong(baseAddress + USED_SIZE_OFFSET);
-        long pos = dataStart;
+        if (this.baseAddress == 0L) {
+            logger.error("findRegion called with baseAddress=0");
+            return 0L;
+        }
 
-        while (pos < dataStart + usedSize) {
-            int existingTopic = getInt(pos + REGION_TOPIC_ID_OFFSET);
+        long usedSize = UnsafeUtil.getLong(this.baseAddress + 16L);
+
+        if (usedSize < 0 || usedSize > this.totalSize - 1024L) {
+            logger.warn("Invalid usedSize: {}, resetting to 0", usedSize);
+            UnsafeUtil.putLong(this.baseAddress + 16L, 0L);
+            return 0L;
+        }
+
+        if (usedSize == 0) {
+            return 0L;
+        }
+
+        if (usedSize % 4096 != 0) {
+            logger.warn("usedSize not aligned: {}, resetting to 0", usedSize);
+            UnsafeUtil.putLong(this.baseAddress + 16L, 0L);
+            return 0L;
+        }
+
+        for (long pos = this.dataStart; pos < this.dataStart + usedSize; ) {
+            if (pos < this.baseAddress || pos > this.baseAddress + this.totalSize) {
+                logger.error("pos out of range: pos=0x{}, base=0x{}, total={}", Long.toHexString(pos), Long.toHexString(this.baseAddress), this.totalSize);
+                resetSharedMemory();
+                return 0L;
+            }
+
+            int existingTopic = UnsafeUtil.getInt(pos);
+            int regionSize = UnsafeUtil.getInt(pos + 4L);
+
+            if (regionSize <= 0 || regionSize > this.totalSize) {
+                logger.error("Invalid region size: {} at pos=0x{}, resetting shared memory", regionSize, Long.toHexString(pos));
+                resetSharedMemory();
+                return 0L;
+            }
+
             if (existingTopic == topicId) {
-                putLong(pos + REGION_LAST_ACCESS_OFFSET, System.currentTimeMillis());
+                long writeAddr = pos + 32L;
+                if (writeAddr >= this.baseAddress + this.totalSize) {
+                    logger.error("write address out of range: 0x{}", Long.toHexString(writeAddr));
+                    resetSharedMemory();
+                    return 0L;
+                }
+                UnsafeUtil.putLong(writeAddr, System.currentTimeMillis());
                 return pos;
             }
-            int regionSize = getInt(pos + REGION_SIZE_OFFSET);
             pos += regionSize;
         }
 
-        return 0;
+        return 0L;
+    }
+
+    private void resetSharedMemory() {
+        logger.warn("Resetting shared memory due to corruption");
+        UnsafeUtil.putLong(this.baseAddress + 16L, 0L);
+        UnsafeUtil.putInt(this.baseAddress + 24L, 0);
+        UnsafeUtil.setMemory(this.dataStart, this.totalSize - 1024L, (byte) 0);
+        UnsafeUtil.setMemory(this.baseAddress + 128L, 2048L, (byte) 0);
+        this.topicCache.clear();
+        this.stringTopicCache.clear();
     }
 
     public boolean topicExists(int topicId) {

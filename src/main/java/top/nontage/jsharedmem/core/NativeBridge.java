@@ -40,25 +40,125 @@ public class NativeBridge {
     }
 
     public interface LibRt extends Library {
-        LibRt INSTANCE = !IS_WINDOWS ? Native.load("rt", LibRt.class) : null;
         int O_CREAT = 64;
         int O_RDWR = 2;
-        int O_RDONLY = 0;
+        int O_EXCL = 0x0800;
         int PROT_READ = 1;
         int PROT_WRITE = 2;
         int MAP_SHARED = 1;
 
         int shm_open(String name, int oflag, int mode);
-
         int ftruncate(int fd, long length);
-
         long mmap(long addr, long length, int prot, int flags, int fd, long offset);
-
         int munmap(long addr, long length);
-
         int close(int fd);
+    }
 
-        int shm_unlink(String name);
+    private static LibRt libRt = null;
+
+    private static synchronized LibRt getLibRt() {
+        if (libRt == null) {
+            String[] candidates = {
+                    "/usr/lib/x86_64-linux-gnu/librt.so.1",
+                    "/usr/lib/librt.so.1",
+                    "rt",
+                    "c"
+            };
+
+            for (String lib : candidates) {
+                try {
+                    libRt = Native.load(lib, LibRt.class);
+                    logger.info("Loaded C library: {}", lib);
+                    return libRt;
+                } catch (UnsatisfiedLinkError | Exception e) {
+                    logger.debug("Failed to load {}: {}", lib, e.getMessage());
+                }
+            }
+
+            throw new SharedMemoryException(
+                    "Failed to load any C library for shared memory. " +
+                            "Please install librt or libc development package.\n" +
+                            "On Ubuntu/Debian: sudo apt-get install libc6-dev\n" +
+                            "On WSL: ensure /usr/lib/x86_64-linux-gnu/librt.so.1 exists"
+            );
+        }
+        return libRt;
+    }
+
+    private static void validateLinuxSharedMemory(String name, long size) {
+        String shmPath = "/dev/shm/" + name;
+        java.io.File shmFile = new java.io.File(shmPath);
+
+        if (!shmFile.exists()) {
+            return;
+        }
+
+        try {
+            LibRt rt = getLibRt();
+            int fd = rt.shm_open("/" + name, LibRt.O_RDWR, 438);
+
+            if (fd < 0) {
+                logger.warn("Cannot open existing shared memory for validation: {}", shmPath);
+                return;
+            }
+
+            long addr = rt.mmap(0, 1024, LibRt.PROT_READ, LibRt.MAP_SHARED, fd, 0);
+            if (addr != -1) {
+                int magic = UnsafeUtil.getInt(addr);
+                boolean valid = false;
+
+                if (magic == 0x4A534D || Integer.reverseBytes(magic) == 0x4A534D) {
+                    long totalSize = UnsafeUtil.getLong(addr + 8);
+                    if (totalSize == size) {
+                        valid = true;
+                        logger.debug("Valid shared memory found: {}", shmPath);
+                    } else {
+                        logger.warn("Size mismatch: found {}, expected {}", totalSize, size);
+                    }
+                } else {
+                    logger.warn("Invalid magic number: 0x{}", Integer.toHexString(magic));
+                }
+
+                rt.munmap(addr, 1024);
+
+                if (!valid) {
+                    throw new SharedMemoryException(
+                            "Existing shared memory is invalid or size mismatch: " + shmPath +
+                                    ". Please delete manually: rm -f " + shmPath
+                    );
+                }
+            }
+            rt.close(fd);
+
+        } catch (SharedMemoryException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.warn("Error validating shared memory: {}", e.getMessage());
+        }
+    }
+
+    private static void validateWindowsSharedMemory(String name) {
+        try {
+            Kernel32 k32 = Kernel32.INSTANCE;
+            long hMap = k32.OpenFileMappingW(
+                    Kernel32.FILE_MAP_READ,
+                    false,
+                    new WString(name)
+            );
+            if (hMap != 0) {
+                long addr = k32.MapViewOfFile(hMap, Kernel32.FILE_MAP_READ, 0, 0, 1024);
+                if (addr != 0) {
+                    int magic = UnsafeUtil.getInt(addr);
+                    if (magic != 0x4A534D) {
+                        logger.warn("Invalid magic number on Windows: 0x{}", Integer.toHexString(magic));
+                    }
+                    k32.UnmapViewOfFile(new Pointer(addr));
+                }
+                k32.CloseHandle(hMap);
+            }
+        } catch (Exception e) {
+            logger.warn("Error checking Windows shared memory: {}", e.getMessage());
+        }
     }
 
     public static synchronized long createOrOpen(String name, long size) {
@@ -73,6 +173,12 @@ public class NativeBridge {
         }
 
         String safeName = name.replaceAll("[^a-zA-Z0-9_]", "_");
+
+        if (!IS_WINDOWS) {
+            validateLinuxSharedMemory(safeName, size);
+        } else {
+            validateWindowsSharedMemory(safeName);
+        }
 
         try {
             long address;
@@ -102,6 +208,8 @@ public class NativeBridge {
 
             return address;
 
+        } catch (SharedMemoryException e) {
+            throw e;
         } catch (Exception e) {
             throw new SharedMemoryException("Failed to create/open shared memory: " + name, e);
         }
@@ -109,6 +217,9 @@ public class NativeBridge {
 
     private static long createWindows(String name, long size) {
         Kernel32 k32 = Kernel32.INSTANCE;
+        if (k32 == null) {
+            throw new SharedMemoryException("Failed to load Kernel32 library");
+        }
 
         long hMap = k32.CreateFileMappingW(
                 Kernel32.INVALID_HANDLE_VALUE,
@@ -146,9 +257,12 @@ public class NativeBridge {
 
     private static long openWindows(String name, long size) {
         Kernel32 k32 = Kernel32.INSTANCE;
+        if (k32 == null) {
+            throw new SharedMemoryException("Failed to load Kernel32 library");
+        }
 
         long hMap = k32.OpenFileMappingW(
-                Kernel32.FILE_MAP_WRITE | Kernel32.FILE_MAP_READ,
+                Kernel32.FILE_MAP_READ,
                 false,
                 new WString(name)
         );
@@ -161,7 +275,7 @@ public class NativeBridge {
 
         long addr = k32.MapViewOfFile(
                 hMap,
-                Kernel32.FILE_MAP_WRITE | Kernel32.FILE_MAP_READ,
+                Kernel32.FILE_MAP_READ,
                 0, 0,
                 size
         );
@@ -179,6 +293,7 @@ public class NativeBridge {
 
     private static void closeWindows() {
         Kernel32 k32 = Kernel32.INSTANCE;
+        if (k32 == null) return;
 
         if (mappedAddress != 0) {
             k32.UnmapViewOfFile(new Pointer(mappedAddress));
@@ -191,15 +306,18 @@ public class NativeBridge {
         }
     }
 
-
     private static long createLinux(String name, long size) {
-        LibRt rt = LibRt.INSTANCE;
+        LibRt rt = getLibRt();
 
         String shmName = "/" + name;
-        int fd = rt.shm_open(shmName, LibRt.O_CREAT | LibRt.O_RDWR, 438);
+        int fd = rt.shm_open(shmName, LibRt.O_CREAT | LibRt.O_RDWR | LibRt.O_EXCL, 438);
 
         if (fd < 0) {
             int errno = Native.getLastError();
+            if (errno == 17) { // EEXIST
+                logger.debug("Shared memory already exists: {}", shmName);
+                return 0;
+            }
             throw new SharedMemoryException(
                     String.format("shm_open create failed: name=%s, errno=%d", shmName, errno)
             );
@@ -227,23 +345,29 @@ public class NativeBridge {
             );
         }
 
-        logger.debug("Created Linux shared memory: {}", shmName);
+        logger.info("Created Linux shared memory: {}, fd={}, addr=0x{}", shmName, fd, Long.toHexString(addr));
         return addr;
     }
 
     private static long openLinux(String name, long size) {
-        LibRt rt = LibRt.INSTANCE;
+        LibRt rt = getLibRt();
 
         String shmName = "/" + name;
-        int fd = rt.shm_open(shmName, LibRt.O_RDONLY, 438);
+        int fd = rt.shm_open(shmName, LibRt.O_RDWR, 438);
 
         if (fd < 0) {
+            int errno = Native.getLastError();
+            if (errno == 2) { // ENOENT
+                logger.debug("Shared memory does not exist: {}", shmName);
+            } else {
+                logger.warn("shm_open failed: name={}, errno={}", shmName, errno);
+            }
             return 0;
         }
 
         handle = fd;
 
-        long addr = rt.mmap(0, size, LibRt.PROT_READ, LibRt.MAP_SHARED, fd, 0);
+        long addr = rt.mmap(0, size, LibRt.PROT_READ | LibRt.PROT_WRITE, LibRt.MAP_SHARED, fd, 0);
 
         if (addr == -1) {
             int errno = Native.getLastError();
@@ -254,12 +378,18 @@ public class NativeBridge {
             );
         }
 
-        logger.debug("Opened Linux shared memory: {}", shmName);
+        logger.info("Opened Linux shared memory: {}, fd={}, addr=0x{}", shmName, fd, Long.toHexString(addr));
         return addr;
     }
 
     private static void closeLinux() {
-        LibRt rt = LibRt.INSTANCE;
+        LibRt rt;
+        try {
+            rt = getLibRt();
+        } catch (SharedMemoryException e) {
+            logger.warn("Failed to get LibRt for cleanup: {}", e.getMessage());
+            return;
+        }
 
         if (mappedAddress != 0) {
             int result = rt.munmap(mappedAddress, currentSize);
@@ -278,19 +408,6 @@ public class NativeBridge {
                 logger.warn("close failed: fd={}, errno={}", handle, errno);
             }
             handle = -1;
-        }
-
-        if (currentName != null) {
-            String shmName = "/" + currentName;
-            int result = rt.shm_unlink(shmName);
-            if (result != 0) {
-                int errno = Native.getLastError();
-                if (errno != 2) {
-                    logger.warn("shm_unlink failed: name={}, errno={}", shmName, errno);
-                }
-            } else {
-                logger.debug("shm_unlink succeeded: name={}", shmName);
-            }
         }
     }
 
