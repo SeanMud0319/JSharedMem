@@ -1,5 +1,7 @@
 package top.nontage.jsharedmem.model;
 
+import java.util.Date;
+
 public class MemoryStats {
     public final long arenaSize;
     public final long arenaUsed;
@@ -21,12 +23,24 @@ public class MemoryStats {
         this.createdAt = createdAt;
     }
 
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) {
+            return bytes + " bytes";
+        } else if (bytes < 1024 * 1024) {
+            return String.format("%.2f KB", bytes / 1024.0);
+        } else if (bytes < 1024 * 1024 * 1024) {
+            return String.format("%.2f MB", bytes / (1024.0 * 1024));
+        } else {
+            return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
+        }
+    }
+
     public double getArenaUsagePercent() {
-        return (double) arenaUsed / arenaSize * 100;
+        return arenaSize > 0 ? (double) arenaUsed / arenaSize * 100 : 0;
     }
 
     public double getRegionUsagePercent() {
-        return (double) regionUsed / regionSize * 100;
+        return regionSize > 0 ? (double) regionUsed / regionSize * 100 : 0;
     }
 
     public long getArenaAvailable() {
@@ -36,17 +50,17 @@ public class MemoryStats {
     @Override
     public String toString() {
         return String.format(
-                "MemoryStats{arena=%.2f MB, arenaUsed=%.2f MB (%.1f%%), region=%.2f MB, regionUsed=%.2f MB (%.1f%%), topicData=%.2f MB (%d msgs), topics=%d, created=%s}",
-                arenaSize / (1024.0 * 1024.0),
-                arenaUsed / (1024.0 * 1024.0),
+                "MemoryStats{arena=%s, arenaUsed=%s (%.1f%%), region=%s, regionUsed=%s (%.1f%%), topicData=%s (%d msgs), topics=%d, created=%s}",
+                formatBytes(arenaSize),
+                formatBytes(arenaUsed),
                 getArenaUsagePercent(),
-                regionSize / (1024.0 * 1024.0),
-                regionUsed / (1024.0 * 1024.0),
+                formatBytes(regionSize),
+                formatBytes(regionUsed),
                 getRegionUsagePercent(),
-                topicDataBytes / (1024.0 * 1024.0),
+                formatBytes(topicDataBytes),
                 topicDataCount,
                 topicCount,
-                new java.util.Date(createdAt)
+                new Date(createdAt)
         );
     }
 }
