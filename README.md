@@ -1,3 +1,151 @@
+# JSharedMem - Engineering Sample (For Research Purposes Only)
+
+## Introduction
+JSharedMem is a Java inter-process communication (IPC) library based on shared memory, supporting the Publish/Subscribe (Pub/Sub) pattern.  
+It uses `sun.misc.Unsafe` and JNA for direct memory manipulation, and is designed to run cross-platform on both Windows and Linux.  
+**This project is an engineering sample for personal research and experimentation purposes only. It is NOT intended for production use.**
+
+## Features
+- **Cross-Platform** – Uses Memory Mapped Files (kernel32) on Windows and POSIX `shm_open`/`mmap` on Linux
+- **Dual Topic Modes** – Supports both integer `int` topic IDs and human-readable `String` topic names
+- **Multiple Subscribers** – Each topic supports up to 32 subscribers with independent read offsets
+- **Message Expiration (TTL)** – Messages can be published with a time-to-live; expired messages are automatically skipped
+- **Metadata Access** – Messages can be consumed along with their timestamp and TTL values
+- **Callback & Listener** – Asynchronous listener model using an internal thread pool for polling
+- **Memory Statistics** – Query memory usage, pending message counts, and other metrics for the entire arena and individual topics
+- **Automatic Cleanup** – Invalid messages are automatically skipped, and topics can be manually removed
+
+## System Requirements
+- Java 8 or later
+- Dependencies: JNA 5.x, SLF4J (with an implementation such as logback)
+- Operating System: Windows or Linux (with native library support)
+- Execution Privileges: Ability to create/open shared memory objects
+
+## Quick Start
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/SeanMud0319/JSharedMem.git
+cd JSharedMem
+```
+
+### 2. Build and Install to Local Maven Repository
+```bash
+mvn clean install
+```
+
+### 3. Add Dependency to Your Project
+Add the following dependency to your `pom.xml` (adjust groupId, artifactId, and version as needed):
+```xml
+<dependency>
+    <groupId>top.nontage</groupId>
+    <artifactId>jsharedmem</artifactId>
+    <version>1.0-SNAPSHOT</version>
+</dependency>
+```
+
+### 4. Connect to Shared Memory
+```java
+// Default 1MB shared memory
+JSharedMem shm = JSharedMem.connect("my_app");
+
+// Custom size, e.g., 2MB
+JSharedMem shm = JSharedMem.connect("my_app", 2 * 1024 * 1024);
+
+// Full parameters: name, memory size, max message size, default region size
+JSharedMem shm = JSharedMem.connect("my_app", 2 * 1024 * 1024, 256 * 1024, 128 * 1024);
+```
+
+### 5. Publish Messages
+```java
+// String topic
+shm.publish("orders", "New order created!");
+
+// Integer topic
+shm.publish(1, "Sensor reading: 42.5");
+
+// With custom TTL (milliseconds), e.g., expires after 10 seconds
+shm.publish("alerts", "High temperature", 10000L);
+```
+
+### 6. Subscribe to Messages
+```java
+// String topic with auto-generated subscriber ID
+shm.subscribe("orders", (topicId, data) -> {
+    String msg = shm.fromBytes(data, String.class);
+    System.out.println("Received: " + msg);
+});
+
+// Integer topic with custom subscriber ID
+shm.subscribe(1, "my_subscriber", (topicId, data) -> {
+    double reading = shm.fromBytes(data, double.class);
+    System.out.printf("Sensor value: %.2f%n", reading);
+});
+```
+
+### 7. Subscribe with Metadata
+```java
+shm.subscribeWithMeta("alerts", (topicId, data, timestamp, ttl) -> {
+    String msg = shm.fromBytes(data, String.class);
+    System.out.printf("Message: %s, Timestamp: %d, TTL: %d%n", msg, timestamp, ttl);
+});
+```
+
+### 8. Query Statistics and Manage Topics
+```java
+// Overall statistics
+MemoryStats stats = shm.getStats();
+System.out.println(stats);
+
+// List of topics
+List<String> topics = shm.getTopicList();
+System.out.println("Active topics: " + topics);
+
+// Topic metadata
+TopicMetadata meta = shm.getTopicMetadata("orders");
+if (meta != null) {
+    System.out.println("Pending messages: " + meta.getPendingCount());
+}
+
+// Remove a topic
+shm.removeTopic("orders");
+```
+
+### 9. Close the Connection
+```java
+shm.close();  // Interrupts all subscriber threads and releases resources
+// Also supports try-with-resources (AutoCloseable)
+try (JSharedMem shm = JSharedMem.connect("test")) {
+    // ...
+}
+```
+
+## Configuration Parameters
+| Parameter | Default Value | Description |
+|-----------|---------------|-------------|
+| `DEFAULT_MEMORY_SIZE` | 1 MB (1024×1024) | Total shared memory size; must be a multiple of 4KB |
+| `maxDataSize` | 10% of memory size (max half) | Maximum allowed size for a single message in bytes |
+| `defaultRegionSize` | 64 KB | Memory region size allocated per topic |
+| Message TTL | 10000 ms (10s) | Default time-to-live; can be overridden per message |
+
+## Internal Architecture Overview
+- **Global Header (1024 bytes)** – Stores magic number, version, used size, topic count, creation timestamp, etc.
+- **String Topic Map (max 32 entries)** – Maps string topic names to integer topic IDs in a fixed shared memory region.
+- **Region (per topic)** – Each topic has its own memory region containing a topic header, subscriber table (up to 32), and a ring buffer.
+- **Message Format** – Length (4 bytes), Timestamp (8 bytes), TTL (8 bytes), Payload (variable).
+- **Synchronization** – Uses `Unsafe.compareAndSwap` for lock-free writes.
+
+## Important Notes
+- **This code is an engineering sample and is intended for research, learning, and experimentation only. It has not been fully validated for stability, performance, or security, and should NOT be used in production environments.**
+- Shared memory may persist after abnormal program termination. On Linux, you can manually delete `/dev/shm/<name>`; on Windows, resources are usually reclaimed by the OS.
+- Maximum number of topics: 32 (shared between string and integer topics).
+- Maximum number of subscribers per topic: 32.
+- Message size is limited by the region capacity and `maxDataSize`.
+- When multiple processes are involved, ensure proper shutdown ordering at the application level to avoid race conditions.
+
+## License
+This project is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
 # JSharedMem - 工程樣品 純屬研究
 
 ## 簡介
@@ -65,7 +213,7 @@ shm.publish("orders", "New order created!");
 shm.publish(1, "Sensor reading: 42.5");
 
 // 指定 TTL（毫秒），例如 10 秒後過期
-shm.publish("alerts", "High temperature", 10_000L);
+shm.publish("alerts", "High temperature", 10000L);
 ```
 
 ### 6. 訂閱訊息
