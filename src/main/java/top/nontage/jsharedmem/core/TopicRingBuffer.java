@@ -385,6 +385,18 @@ public class TopicRingBuffer {
         this.closed = true;
     }
 
+    public int getTopicId() {
+        return topicId;
+    }
+
+    public long getDataStartAddress() {
+        return dataStart;
+    }
+
+    public int getDataCapacity() {
+        return dataCapacity;
+    }
+
     public static class MessageWithMeta {
         public final byte[] data;
         public final long timestamp;

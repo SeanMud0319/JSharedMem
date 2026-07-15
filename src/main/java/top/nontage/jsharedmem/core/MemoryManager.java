@@ -526,12 +526,16 @@ public class MemoryManager {
 
         TopicRingBuffer buffer = topicCache.get(topicId);
         long pendingCount = 0;
+        long dataStartAddress = 0;
+        long dataCapacity = 0;
+
         if (buffer != null) {
             pendingCount = buffer.getPendingCount();
+            dataStartAddress = buffer.getDataStartAddress();
+            dataCapacity = buffer.getDataCapacity();
         }
 
-        return new TopicMetadata(topicId, regionSize, writeOffset, readOffset,
-                createdAt, lastAccess, pendingCount);
+        return new TopicMetadata(topicId, regionSize, writeOffset, readOffset, createdAt, lastAccess, pendingCount, dataStartAddress, dataCapacity);
     }
 
     public TopicMetadata getTopicMetadata(String topic) {
@@ -552,14 +556,26 @@ public class MemoryManager {
         long totalDataBytes = 0;
         long totalDataCount = 0;
 
+        Map<Integer, TopicMetadata> topicDetails = new ConcurrentHashMap<>();
+
         for (TopicRingBuffer buffer : topicCache.values()) {
+            int tid = buffer.getTopicId();
             totalRegionSize += buffer.getCapacity();
-            totalRegionUsed += buffer.getCapacity() - (buffer.getCapacity() - buffer.getPendingBytes());
-            totalDataBytes += buffer.getPendingBytes();
+            long pendingBytes = buffer.getPendingBytes();
+            totalRegionUsed += pendingBytes;
+            totalDataBytes += pendingBytes;
             totalDataCount += buffer.getPendingCount();
+
+            TopicMetadata meta = getTopicMetadata(tid);
+            if (meta != null) {
+                topicDetails.put(tid, meta);
+            }
         }
 
-        return new MemoryStats(totalSize, arenaUsed, totalRegionSize, totalRegionUsed, totalDataBytes, totalDataCount, topicCount, createdAt);
+        Map<String, Integer> stringTopicMap = new ConcurrentHashMap<>(this.stringTopicCache);
+
+        // My screen is wide enough, so I don't need to wrap the text LOL.
+        return new MemoryStats(totalSize, arenaUsed, totalRegionSize, totalRegionUsed, totalDataBytes, totalDataCount, topicCount, createdAt, topicDetails, stringTopicMap);
     }
 
     public long getTopicPendingCount(int topicId) {
