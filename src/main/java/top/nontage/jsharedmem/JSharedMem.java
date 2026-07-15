@@ -92,11 +92,18 @@ public class JSharedMem implements AutoCloseable {
         if (defaultRegionSize < 4096) {
             throw new IllegalArgumentException("Default region size too small: " + defaultRegionSize + " (min 4KB)");
         }
-        if (defaultRegionSize > memorySize) {
-            throw new IllegalArgumentException("Default region size cannot exceed memory size");
-        }
+
         memorySize = ((memorySize + 4095) / 4096) * 4096;
         defaultRegionSize = ((defaultRegionSize + 4095) / 4096) * 4096;
+
+        long maxRegionSize = memorySize - 1024;
+        if (defaultRegionSize > maxRegionSize) {
+            throw new IllegalArgumentException(
+                    String.format("Default region size %d exceeds available memory %d (memory %d - 1KB metadata)",
+                            defaultRegionSize, maxRegionSize, memorySize)
+            );
+        }
+
         return new JSharedMem(name, memorySize, maxDataSize, defaultRegionSize);
     }
 

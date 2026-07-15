@@ -246,6 +246,19 @@ public class MemoryManager {
                 return buffer;
             }
 
+            long usedSize = getLong(baseAddress + USED_SIZE_OFFSET);
+            long available = totalSize - GLOBAL_METADATA_SIZE - usedSize;
+
+            long alignedSize = ((regionSize + 4095) / 4096) * 4096;
+
+            if (available < alignedSize) {
+                throw new MemoryFullException(
+                        String.format("Not enough memory to create topic: available=%d bytes, needed=%d bytes (aligned), totalUsed=%d bytes, total=%d bytes",
+                                available, alignedSize, usedSize, totalSize
+                        )
+                );
+            }
+
             TopicRingBuffer newBuffer = createRegion(topicId, regionSize);
             topicCache.put(topicId, newBuffer);
             logger.info("Created new topic {} with region size {} bytes",
@@ -352,16 +365,30 @@ public class MemoryManager {
 
         long available = totalSize - GLOBAL_METADATA_SIZE - usedSize;
 
-        long regionSize = Math.min(requestedSize, available);
-
-        if (regionSize < 4096) {
+        long MIN_REGION_SIZE = 8 * 1024;
+        if (available < MIN_REGION_SIZE) {
             throw new MemoryFullException(
-                    String.format("Not enough memory: requested=%d bytes, available=%d bytes, min region=%d bytes",
-                            requestedSize, available, 4096)
+                    String.format("Not enough memory: available=%d bytes, min region=%d bytes",
+                            available, MIN_REGION_SIZE)
+            );
+        }
+        long regionSize = requestedSize;
+
+        regionSize = ((regionSize + 4095) / 4096) * 4096;
+
+        if (regionSize > available) {
+            throw new MemoryFullException(
+                    String.format("Requested region size %d bytes (aligned) exceeds available memory %d bytes",
+                            regionSize, available)
             );
         }
 
-        regionSize = ((regionSize + 4095) / 4096) * 4096;
+        if (regionSize < MIN_REGION_SIZE) {
+            throw new MemoryFullException(
+                    String.format("Requested region size %d bytes is less than minimum %d bytes",
+                            regionSize, MIN_REGION_SIZE)
+            );
+        }
 
         long regionStart = dataStart + usedSize;
 
@@ -497,7 +524,14 @@ public class MemoryManager {
         long createdAt = getLong(regionStart + REGION_CREATED_AT_OFFSET);
         long lastAccess = getLong(regionStart + REGION_LAST_ACCESS_OFFSET);
 
-        return new TopicMetadata(topicId, regionSize, writeOffset, readOffset, createdAt, lastAccess);
+        TopicRingBuffer buffer = topicCache.get(topicId);
+        long pendingCount = 0;
+        if (buffer != null) {
+            pendingCount = buffer.getPendingCount();
+        }
+
+        return new TopicMetadata(topicId, regionSize, writeOffset, readOffset,
+                createdAt, lastAccess, pendingCount);
     }
 
     public TopicMetadata getTopicMetadata(String topic) {

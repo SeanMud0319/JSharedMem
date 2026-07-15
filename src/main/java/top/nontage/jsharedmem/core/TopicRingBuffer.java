@@ -2,6 +2,7 @@ package top.nontage.jsharedmem.core;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import top.nontage.jsharedmem.exception.SharedMemoryException;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,6 +47,14 @@ public class TopicRingBuffer {
         int regionSize = getInt(regionStart + 4);
         this.dataStart = regionStart + SUBSCRIBER_TABLE_START + SUBSCRIBER_TABLE_SIZE;
         this.dataCapacity = regionSize - SUBSCRIBER_TABLE_START - SUBSCRIBER_TABLE_SIZE;
+
+        if (this.dataCapacity < 1024) {
+            throw new SharedMemoryException(
+                    String.format("Region too small: regionSize=%d, dataCapacity=%d (min 1024)",
+                            regionSize, this.dataCapacity)
+            );
+        }
+
         this.writeOffsetAddress = regionStart + 8;
         this.readOffsetAddress = regionStart + 16;
 
