@@ -69,4 +69,16 @@ public final class UnsafeUtil {
     public static boolean compareAndSwapLong(Object o, long writeOffsetAddress, long writeOffset, long newWriteOffset) {
         return UNSAFE.compareAndSwapLong(o, writeOffsetAddress, writeOffset, newWriteOffset);
     }
+
+    public static void loadFence() {
+        UNSAFE.loadFence();
+    }
+
+    public static void storeFence() {
+        UNSAFE.storeFence();
+    }
+
+    public static void fullFence() {
+        UNSAFE.fullFence();
+    }
 }
