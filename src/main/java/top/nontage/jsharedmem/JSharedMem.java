@@ -29,7 +29,7 @@ public class JSharedMem implements AutoCloseable {
 
     private final String name;
     private final long memorySize;
-    private final int maxDataSize;
+    private final long maxDataSize;
     private final MemoryManager memoryManager;
     private final ExecutorService executor;
     private final AtomicBoolean running = new AtomicBoolean(true);
@@ -38,11 +38,20 @@ public class JSharedMem implements AutoCloseable {
         this.name = name;
         this.memorySize = memorySize;
 
-        long calculatedMax = Math.min(maxDataSize, memorySize / 2);
-        if (calculatedMax < 1024) {
-            calculatedMax = 1024;
+        long regionDataCapacity = defaultRegionSize - 64 - 32 * 64;
+        long calculatedMax = Math.min(Math.max(regionDataCapacity / 10, 1024), 1024 * 1024);
+
+        long finalMaxDataSize;
+        if (maxDataSize > 0) {
+            finalMaxDataSize = Math.min(calculatedMax, maxDataSize);
+        } else {
+            finalMaxDataSize = calculatedMax;
         }
-        this.maxDataSize = (int) calculatedMax;
+
+        if (finalMaxDataSize < 1024) {
+            finalMaxDataSize = 1024;
+        }
+        this.maxDataSize = finalMaxDataSize;
 
         long baseAddress = NativeBridge.createOrOpen(name, memorySize);
         this.memoryManager = new MemoryManager(baseAddress, memorySize);
@@ -69,7 +78,7 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public static JSharedMem connect(String name, long memorySize) {
-        return connect(name, memorySize, (long) (memorySize * DEFAULT_MAX_DATA_SIZE_RATIO));
+        return connect(name, memorySize, (long) (DEFAULT_REGION_SIZE * DEFAULT_MAX_DATA_SIZE_RATIO));
     }
 
     public static JSharedMem connect(String name, long memorySize, long maxDataSize) {
@@ -138,13 +147,7 @@ public class JSharedMem implements AutoCloseable {
     }
 
     private void doPublish(TopicRingBuffer buffer, Object topic, byte[] data, Long ttlMs) {
-        boolean success = buffer.publish(data, ttlMs);
-        if (!success) {
-            throw new MemoryFullException(
-                    String.format("Topic %s memory full, data size: %d bytes, pending: %d messages",
-                            topic, data.length, buffer.getPendingCount())
-            );
-        }
+        buffer.publish(data, ttlMs);
         logger.debug("Published {} bytes to topic {} with TTL {}ms", data.length, topic, ttlMs);
     }
 
@@ -414,7 +417,7 @@ public class JSharedMem implements AutoCloseable {
         memoryManager.removeTopic(topic);
     }
 
-    public int getMaxDataSize() {
+    public long getMaxDataSize() {
         return maxDataSize;
     }
 

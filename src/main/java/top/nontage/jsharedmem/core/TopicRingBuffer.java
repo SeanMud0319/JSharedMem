@@ -2,6 +2,7 @@ package top.nontage.jsharedmem.core;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import top.nontage.jsharedmem.exception.MemoryFullException;
 import top.nontage.jsharedmem.exception.SharedMemoryException;
 
 import java.nio.charset.StandardCharsets;
@@ -166,12 +167,16 @@ public class TopicRingBuffer {
         }
     }
 
-    public boolean publish(byte[] data, Long ttlMs) {
+    public void publish(byte[] data, Long ttlMs) {
         if (closed) {
             throw new IllegalStateException("TopicRingBuffer is closed");
         }
         if (data == null || data.length == 0) {
-            return false;
+            throw new IllegalArgumentException("Data cannot be null or empty");
+        }
+
+        if (data.length > maxMessageSize) {
+            throw new IllegalArgumentException("Message too large: " + data.length + " bytes (max " + maxMessageSize + ")");
         }
 
         long ttl = (ttlMs == null) ? 10000 : ttlMs;
@@ -196,21 +201,27 @@ public class TopicRingBuffer {
             }
 
             if (available < totalSize + 8) {
-                logger.warn("Topic {} memory full: available={}, needed={}", topicId, available, totalSize + 8);
-                return false;
+                throw new MemoryFullException("Topic " + topicId + " memory full: available=" + available + " bytes, needed=" + (totalSize + 8) + " bytes");
             }
 
             long newWriteOffset = writeOffset + totalSize;
             if (compareAndSwapLong(null, writeOffsetAddress, writeOffset, newWriteOffset)) {
                 long now = System.currentTimeMillis();
                 putInt(writePos + MSG_LENGTH_OFFSET, data.length);
+                storeFence();
+                int verifyLen = getInt(writePos + MSG_LENGTH_OFFSET);
+                if (verifyLen != data.length) {
+                    putLong(writeOffsetAddress, writeOffset);
+                    throw new RuntimeException("Length mismatch at offset " + writeOffset + ": wrote " + data.length + ", read " + verifyLen);
+                }
                 putLong(writePos + MSG_TIMESTAMP_OFFSET, now);
                 putLong(writePos + MSG_TTL_OFFSET, ttl);
                 for (int i = 0; i < data.length; i++) {
                     putByte(writePos + MSG_HEADER_SIZE + i, data[i]);
                 }
+                storeFence();
                 logger.trace("Published {} bytes to topic {}", data.length, topicId);
-                return true;
+                return;
             }
         }
     }
@@ -232,12 +243,13 @@ public class TopicRingBuffer {
         }
 
         long readPos = dataStart + (readOffset % dataCapacity);
+        loadFence();
         int length = getInt(readPos + MSG_LENGTH_OFFSET);
 
-
-        if (length <= 0 || length > maxMessageSize) {
-            logger.warn("Invalid message for subscriber {} at offset {}, length={}, skipping", subscriberId, readOffset, length);
-            updateSubscriberReadOffset(subscriberId, readOffset + 1);
+        if (length <= 0 || length > maxMessageSize || length > dataCapacity) {
+            logger.warn("Invalid message at offset {}, length={}, max={}, skipping", readOffset, length, maxMessageSize);
+            long skipSize = Math.min(1024, dataCapacity);
+            updateSubscriberReadOffset(subscriberId, readOffset + skipSize);
             return null;
         }
 
@@ -426,11 +438,13 @@ public class TopicRingBuffer {
         }
 
         long readPos = dataStart + (readOffset % dataCapacity);
+        loadFence();
         int length = getInt(readPos + MSG_LENGTH_OFFSET);
 
-        if (length <= 0 || length > maxMessageSize) {
-            logger.warn("Invalid message for subscriber {} at offset {}, length={}, skipping", subscriberId, readOffset, length);
-            updateSubscriberReadOffset(subscriberId, readOffset + 1);
+        if (length <= 0 || length > maxMessageSize || length > dataCapacity) {
+            logger.warn("Invalid message at offset {}, length={}, max={}, skipping", readOffset, length, maxMessageSize);
+            long skipSize = Math.min(1024, dataCapacity);
+            updateSubscriberReadOffset(subscriberId, readOffset + skipSize);
             return null;
         }
 
