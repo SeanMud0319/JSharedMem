@@ -73,11 +73,6 @@ public class MemoryStats {
         return str + repeat(" ", length - str.length());
     }
 
-    private String padLeft(String str, int length) {
-        if (str.length() >= length) return str;
-        return repeat(" ", length - str.length()) + str;
-    }
-
     public double getArenaUsagePercent() {
         return arenaSize > 0 ? (double) arenaUsed / arenaSize * 100 : 0;
     }
@@ -166,9 +161,17 @@ public class MemoryStats {
         }
 
         if (topicCount > 0) {
-            long regionTotal = Math.min(regionSize, remaining);
-            long regionDataUsed = Math.min(regionUsed, regionTotal);
-            long regionOverhead = Math.min(topicCount * PER_REGION_OVERHEAD, regionTotal);
+            long regionTotal = 0;
+            long regionDataUsed = 0;
+            long regionOverhead = 0;
+            long regionDataCapacity = 0;
+
+            for (TopicMetadata meta : topicDetails.values()) {
+                regionTotal += meta.regionSize;
+                regionDataUsed += meta.regionUsed;
+                regionOverhead += PER_REGION_OVERHEAD;
+                regionDataCapacity += meta.regionSize - PER_REGION_OVERHEAD;
+            }
 
             sb.append("├").append(repeat("─", width)).append("┤\n");
             String label = " Regions (" + topicCount + " topics)";
@@ -177,8 +180,7 @@ public class MemoryStats {
             sb.append(repeat(" ", width - label.length() - sizeStr.length()));
             sb.append(sizeStr).append(" │\n");
 
-            long dataCapacity = regionTotal - regionOverhead;
-            String capStr = "   Data Capacity: " + formatBytes(dataCapacity);
+            String capStr = "   Data Capacity: " + formatBytes(regionDataCapacity);
             sb.append("│").append(capStr);
             sb.append(repeat(" ", width - capStr.length())).append("│\n");
 
@@ -186,7 +188,7 @@ public class MemoryStats {
             sb.append("│").append(usedStr);
             sb.append(repeat(" ", width - usedStr.length())).append("│\n");
 
-            String barStr = "   Data: " + getProgressBar(regionDataUsed, dataCapacity) + " " + String.format("%.1f%%", getRegionUsagePercent());
+            String barStr = "   Data: " + getProgressBar(regionDataUsed, regionDataCapacity) + " " + String.format("%.1f%%", (double) regionDataUsed / regionDataCapacity * 100);
             sb.append("│").append(barStr);
             sb.append(repeat(" ", width - barStr.length())).append("│\n");
 
@@ -201,9 +203,13 @@ public class MemoryStats {
                     sb.append("│").append(topicLabel);
                     sb.append(repeat(" ", width - topicLabel.length())).append("│\n");
 
-                    String capStr2 = "     Data Capacity: " + formatBytes(topicDataCapacity);
+                    String capStr2 = "     Region Size: " + formatBytes(meta.regionSize);
                     sb.append("│").append(capStr2);
                     sb.append(repeat(" ", width - capStr2.length())).append("│\n");
+
+                    String capStr3 = "     Data Capacity: " + formatBytes(topicDataCapacity);
+                    sb.append("│").append(capStr3);
+                    sb.append(repeat(" ", width - capStr3.length())).append("│\n");
 
                     String usedStr2 = "     Data Used: " + formatBytes(meta.regionUsed);
                     sb.append("│").append(usedStr2);
@@ -241,9 +247,13 @@ public class MemoryStats {
 
         long globalMeta = Math.min(GLOBAL_METADATA_SIZE, arenaSize);
         long stringMap = Math.min(STRING_MAP_SIZE, Math.max(0, arenaSize - GLOBAL_METADATA_SIZE));
-        long regionTotal = Math.min(regionSize, Math.max(0, arenaSize - GLOBAL_METADATA_SIZE - STRING_MAP_SIZE));
+        long regionTotal = 0;
+        for (TopicMetadata meta : topicDetails.values()) {
+            regionTotal += meta.regionSize;
+        }
         long freeSpace = Math.max(0, arenaSize - arenaUsed);
         long overheadTotal = topicCount * PER_REGION_OVERHEAD;
+        long regionDataTotal = regionTotal - overheadTotal;
 
         String h1 = " Component";
         String h2 = " Size";
@@ -272,9 +282,9 @@ public class MemoryStats {
 
         String r3 = " Region Data";
         sb.append("│").append(padRight(r3, 26));
-        sb.append("│").append(padRight(formatBytesSimple(regionTotal - overheadTotal), 14));
-        sb.append("│").append(padRight(String.format("%.1f%%", (double) (regionTotal - overheadTotal) / arenaSize * 100), 12));
-        sb.append("│").append(padRight((regionTotal - overheadTotal) > 0 ? "Usable" : "N/A", 10));
+        sb.append("│").append(padRight(formatBytesSimple(regionDataTotal), 14));
+        sb.append("│").append(padRight(String.format("%.1f%%", (double) regionDataTotal / arenaSize * 100), 12));
+        sb.append("│").append(padRight(regionDataTotal > 0 ? "Usable" : "N/A", 10));
         sb.append("│\n");
 
         String r4 = " Region Overhead";
