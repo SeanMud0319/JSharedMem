@@ -121,12 +121,12 @@ try (JSharedMem shm = JSharedMem.connect("test")) {
 ```
 
 ## Configuration Parameters
-| Parameter | Default Value | Description |
-|-----------|---------------|-------------|
-| `DEFAULT_MEMORY_SIZE` | 1 MB (1024×1024) | Total shared memory size; must be a multiple of 4KB |
+| Parameter | Default Value                 | Description |
+|-----------|-------------------------------|-------------|
+| `DEFAULT_MEMORY_SIZE` | 1 MB (1024×1024)              | Total shared memory size; must be a multiple of 4KB |
 | `maxDataSize` | 10% of memory size (max half) | Maximum allowed size for a single message in bytes |
-| `defaultRegionSize` | 64 KB | Memory region size allocated per topic |
-| Message TTL | 10000 ms (10s) | Default time-to-live; can be overridden per message |
+| `defaultRegionSize` | 64 KB                         | Memory region size allocated per topic |
+| Message TTL | 10000 ms (10s) (100ms min)    | Default time-to-live; can be overridden per message |
 
 ## Internal Architecture Overview
 - **Global Header (1024 bytes)** – Stores magic number, version, used size, topic count, creation timestamp, etc.
@@ -269,12 +269,12 @@ try (JSharedMem shm = JSharedMem.connect("test")) {
 ```
 
 ## 設定參數說明
-| 參數 | 預設值 | 說明 |
-|------|--------|------|
-| `DEFAULT_MEMORY_SIZE` | 1 MB (1024×1024) | 共享記憶體總大小，必須為 4KB 對齊倍數 |
-| `maxDataSize` | 記憶體大小的 10%（最大不超過一半） | 單一訊息允許的最大位元組數 |
-| `defaultRegionSize` | 64 KB | 每個主題的記憶體區域大小 |
-| 訊息 TTL | 10000 ms (10 秒) | 發布時可自訂，過期後訂閱者會自動跳過 |
+| 參數 | 預設值                        | 說明 |
+|------|----------------------------|------|
+| `DEFAULT_MEMORY_SIZE` | 1 MB (1024×1024)           | 共享記憶體總大小，必須為 4KB 對齊倍數 |
+| `maxDataSize` | 記憶體大小的 10%（最大不超過一半）        | 單一訊息允許的最大位元組數 |
+| `defaultRegionSize` | 64 KB                      | 每個主題的記憶體區域大小 |
+| 訊息 TTL | 10000 ms (10 秒) (最小 100ms) | 發布時可自訂，過期後訂閱者會自動跳過 |
 
 ## 內部結構概覽
 - **全域標頭 (1024 bytes)**：包含魔術數字、版本、已使用大小、主題數量、建立時間等。

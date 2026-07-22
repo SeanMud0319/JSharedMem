@@ -9,6 +9,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import top.nontage.jsharedmem.exception.SharedMemoryException;
 
+import java.io.File;
+
 public class NativeBridge {
 
     private static final Logger logger = LoggerFactory.getLogger(NativeBridge.class);
@@ -20,7 +22,8 @@ public class NativeBridge {
     private static long currentSize = 0;
 
     public interface Kernel32 extends StdCallLibrary {
-        Kernel32 INSTANCE = Native.load("kernel32", Kernel32.class);
+        // loadLibrary is jna 4.x method, so it can support 4.x ~ 5.x
+        Kernel32 INSTANCE = Native.loadLibrary("kernel32", Kernel32.class);
         long INVALID_HANDLE_VALUE = -1L;
         int PAGE_READWRITE = 0x04;
         int FILE_MAP_WRITE = 0x02;
@@ -70,7 +73,8 @@ public class NativeBridge {
 
             for (String lib : candidates) {
                 try {
-                    libRt = Native.load(lib, LibRt.class);
+                    // loadLibrary is jna 4.x method, so it can support 4.x ~ 5.x
+                    libRt = Native.loadLibrary(lib, LibRt.class);
                     logger.info("Loaded C library: {}", lib);
                     return libRt;
                 } catch (UnsatisfiedLinkError | Exception e) {
@@ -143,7 +147,7 @@ public class NativeBridge {
         if (IS_WINDOWS) return;
 
         String shmPath = "/dev/shm/" + name;
-        java.io.File shmFile = new java.io.File(shmPath);
+        File shmFile = new File(shmPath);
 
         if (!shmFile.exists()) {
             return;

@@ -175,11 +175,13 @@ public class TopicRingBuffer {
             throw new IllegalArgumentException("Data cannot be null or empty");
         }
 
+        cleanExpiredMessages();
+
         if (data.length > maxMessageSize) {
             throw new IllegalArgumentException("Message too large: " + data.length + " bytes (max " + maxMessageSize + ")");
         }
 
-        long ttl = (ttlMs == null) ? 10000 : ttlMs;
+        long ttl = (ttlMs == null) ? 10000 : Math.max(ttlMs, 100L);
 
         int totalSize = MSG_HEADER_SIZE + data.length;
         totalSize = (totalSize + 7) & ~7;
