@@ -48,7 +48,7 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
-                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <createDependencyReducedPom>true</createDependencyReducedPom>
                             <shadedArtifactAttached>false</shadedArtifactAttached>
                             <filters>
                                 <filter>
@@ -60,16 +60,6 @@
                                     </excludes>
                                 </filter>
                             </filters>
-                            <relocations>
-                                <relocation>
-                                    <pattern>com.sun.jna</pattern>
-                                    <shadedPattern>top.nontage.jsharedmem.libs.com.sun.jna</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>org.slf4j</pattern>
-                                    <shadedPattern>top.nontage.jsharedmem.libs.org.slf4j</shadedPattern>
-                                </relocation>
-                            </relocations>
                         </configuration>
                     </execution>
                 </executions>
