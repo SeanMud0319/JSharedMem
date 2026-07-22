@@ -462,6 +462,43 @@ public class NativeBridge {
         }
     }
 
+    public static synchronized boolean isArenaExists(String name) {
+        String safeName = name.replaceAll("[^a-zA-Z0-9_]", "_");
+
+        try {
+            if (IS_WINDOWS) {
+                Kernel32 k32 = Kernel32.INSTANCE;
+                long hMap = k32.OpenFileMappingW(
+                        Kernel32.FILE_MAP_READ,
+                        false,
+                        new WString(safeName)
+                );
+
+                if (hMap == 0) {
+                    return false;
+                }
+
+                k32.CloseHandle(hMap);
+                return true;
+
+            } else {
+                LibRt rt = getLibRt();
+                String shmName = "/" + safeName;
+                int fd = rt.shm_open(shmName, LibRt.O_RDWR, 438);
+
+                if (fd < 0) {
+                    return false;
+                }
+
+                rt.close(fd);
+                return true;
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to check if arena exists: {}", e.getMessage());
+            return false;
+        }
+    }
+
     public static long getMappedAddress() {
         return mappedAddress;
     }

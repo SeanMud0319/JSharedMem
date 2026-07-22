@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import top.nontage.jsharedmem.core.MemoryManager;
 import top.nontage.jsharedmem.core.NativeBridge;
 import top.nontage.jsharedmem.core.TopicRingBuffer;
-import top.nontage.jsharedmem.exception.MemoryFullException;
 import top.nontage.jsharedmem.model.MemoryStats;
 import top.nontage.jsharedmem.model.TopicMetadata;
 
