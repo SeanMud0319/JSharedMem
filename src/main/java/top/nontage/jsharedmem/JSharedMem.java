@@ -116,6 +116,7 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public void setDefaultRegionSize(long regionSize) {
+        checkRunning();
         memoryManager.setDefaultRegionSize(regionSize);
     }
 
@@ -291,77 +292,69 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public boolean topicExists(String topic) {
+        checkRunning();
         if (topic == null || topic.trim().isEmpty()) return false;
         return memoryManager.topicExists(topic);
     }
 
     public boolean topicExists(int topicId) {
+        checkRunning();
         return memoryManager.topicExists(topicId);
     }
 
     public List<String> getTopicList() {
+        checkRunning();
         return memoryManager.getStringTopicList();
     }
 
     public List<Integer> getIntTopicList() {
+        checkRunning();
         return memoryManager.getTopicList();
     }
 
     public Integer getTopicId(String topic) {
+        checkRunning();
         int id = memoryManager.getTopicId(topic);
         return id == -1 ? null : id;
     }
 
     public String getTopicName(int topicId) {
+        checkRunning();
         return memoryManager.getTopicName(topicId);
     }
 
     public TopicMetadata getTopicMetadata(int topicId) {
-        if (!running.get()) {
-            throw new IllegalStateException("JSharedMem is already closed");
-        }
+        checkRunning();
         return memoryManager.getTopicMetadata(topicId);
     }
 
     public TopicMetadata getTopicMetadata(String topic) {
-        if (!running.get()) {
-            throw new IllegalStateException("JSharedMem is already closed");
-        }
+        checkRunning();
         return memoryManager.getTopicMetadata(topic);
     }
 
     public long getTopicPendingCount(int topicId) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         return memoryManager.getTopicPendingCount(topicId);
     }
 
     public long getTopicPendingCount(String topic) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         return memoryManager.getTopicPendingCount(topic);
     }
 
     public long getTopicPendingCount(int topicId, String subscriberId) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         return memoryManager.getTopicPendingCount(topicId, subscriberId);
     }
 
     public long getTopicPendingCount(String topic, String subscriberId) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         return memoryManager.getTopicPendingCount(topic, subscriberId);
     }
 
     public long getTopicPendingBytes(int topicId) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         TopicRingBuffer buffer = memoryManager.getTopic(topicId);
         if (buffer == null) {
             return 0;
@@ -370,9 +363,7 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public long getTopicPendingBytes(String topic) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         TopicRingBuffer buffer = memoryManager.getTopic(topic);
         if (buffer == null) {
             return 0;
@@ -381,9 +372,7 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public long getTopicPendingBytes(int topicId, String subscriberId) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         TopicRingBuffer buffer = memoryManager.getTopic(topicId);
         if (buffer == null) {
             return 0;
@@ -392,9 +381,7 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public long getTopicPendingBytes(String topic, String subscriberId) {
-        if (!running.get()) {
-            return 0;
-        }
+        checkRunning();
         TopicRingBuffer buffer = memoryManager.getTopic(topic);
         if (buffer == null) {
             return 0;
@@ -403,28 +390,27 @@ public class JSharedMem implements AutoCloseable {
     }
 
     public void removeTopic(int topicId) {
-        if (!running.get()) {
-            throw new IllegalStateException("JSharedMem is already closed");
-        }
+        checkRunning();
         memoryManager.removeTopic(topicId);
     }
 
     public void removeTopic(String topic) {
-        if (!running.get()) {
-            throw new IllegalStateException("JSharedMem is already closed");
-        }
+        checkRunning();
         memoryManager.removeTopic(topic);
     }
 
     public long getMaxDataSize() {
+        checkRunning();
         return maxDataSize;
     }
 
     public long getMemorySize() {
+        checkRunning();
         return memorySize;
     }
 
     public MemoryStats getStats() {
+        checkRunning();
         return memoryManager.getStats();
     }
 
